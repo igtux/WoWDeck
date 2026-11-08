@@ -1,0 +1,13 @@
+## Interface: 120100, 50504, 38010, 20506, 16001, 11509
+## Title: WoWDeck
+## Notes: Apply saved ConsolePort configs, track gathering, and type with an on-screen keyboard - all with one tap.
+## Author: deck
+## Version: 1.0
+## SavedVariables: WoWDeckDB
+## OptionalDeps: ConsolePort, ConsolePort_Config
+
+Keyboard.lua
+Gathering.lua
+Bag.lua
+Quests.lua
+Core.lua
