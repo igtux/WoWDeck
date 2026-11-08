@@ -312,6 +312,17 @@ eventFrame:RegisterEvent('PLAYER_SOFT_INTERACT_CHANGED')
 eventFrame:RegisterEvent('PLAYER_TARGET_CHANGED')
 eventFrame:RegisterEvent('PLAYER_ENTERING_WORLD')
 eventFrame:SetScript('OnEvent', function(_, event, oldTarget, newTarget)
+	if event == 'PLAYER_ENTERING_WORLD' then
+		-- PLAYER_SOFT_INTERACT_CHANGED only fires at all when this CVar
+		-- is on. Blizzard enables it automatically in gamepad mode, and
+		-- ConsolePort normally enables it too - but ConsolePort's own
+		-- auto-enable explicitly skips this client version, so on a
+		-- plain mouse+keyboard setup nothing ever turns it on and the
+		-- card has no signal to react to. Turning it on ourselves makes
+		-- this independent of input method or which other addons are
+		-- running.
+		pcall(SetCVar, 'SoftTargetInteract', '1')
+	end
 	if event == 'PLAYER_SOFT_INTERACT_CHANGED' then
 		UpdateCard(newTarget)
 	else
@@ -323,4 +334,18 @@ end)
 -- that keeps corpses from popping the card automatically.
 function WoWDeck_CheckTarget()
 	UpdateCard(nil, true)
+end
+
+-- In-game debug toggle so an issue can be diagnosed by anyone without
+-- editing files - prints the current SoftTargetInteract CVar value
+-- (the setting the whole card depends on) plus live soft-interact
+-- state on every change while enabled.
+SLASH_WOWDECKDEBUG1 = '/wowdeckdebug'
+SlashCmdList['WOWDECKDEBUG'] = function()
+	DEBUG = not DEBUG
+	local cvarValue = GetCVar and GetCVar('SoftTargetInteract') or '?'
+	Debug(('debug %s (SoftTargetInteract=%s)'):format(DEBUG and 'ON' or 'OFF', tostring(cvarValue)))
+	if DEFAULT_CHAT_FRAME then
+		DEFAULT_CHAT_FRAME:AddMessage(('|cff69ccf0WoWDeck:|r gathering debug %s'):format(DEBUG and 'ON' or 'OFF'))
+	end
 end
