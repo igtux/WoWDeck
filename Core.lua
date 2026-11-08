@@ -9,8 +9,13 @@ This reuses ConsolePort's own tested apply logic end-to-end; nothing
 about bindings/cvars/action bars is reimplemented here.
 ]]
 
-WoWDeckDB = WoWDeckDB or {}
-local DB = WoWDeckDB
+-- Bound here only as a placeholder; the real table is (re)bound in the
+-- PLAYER_LOGIN handler below. On this server, SavedVariables weren't
+-- actually in place yet when this file's top-level code ran, so
+-- capturing WoWDeckDB this early pointed every closure above at a
+-- throwaway table that never got saved - confirmed by Apply Pending
+-- Config and the saved launcher position silently not persisting.
+local DB = {}
 
 local NUMDIALOGS = STATICPOPUP_NUMDIALOGS or 4
 local frame, launcher
@@ -337,6 +342,8 @@ end
 local eventFrame = CreateFrame('Frame')
 eventFrame:RegisterEvent('PLAYER_LOGIN')
 eventFrame:SetScript('OnEvent', function()
+	WoWDeckDB = WoWDeckDB or {}
+	DB = WoWDeckDB -- reassigns the upvalue every closure above already captured
 	CreateMainFrame()
 	CreateLauncher()
 	RefreshState(true)

@@ -80,18 +80,68 @@ local function GetProfessionSkill(profName)
 end
 
 local DEBUG = false
+local DEBUG_LOG_LIMIT = 300
+
+-- Typed /run and /dump are disabled on this server, so chat is often
+-- the only way to see what's happening - and chat scrolls away. While
+-- debug is on, also keep a rolling log in SavedVariables so a user can
+-- send WTF\Account\<id>\SavedVariables\WoWDeck.lua instead of copying
+-- chat text. References the global directly (not a cached local) so
+-- this is unaffected by when exactly SavedVariables load relative to
+-- this file - see the note in Core.lua about that.
 local function Debug(msg)
-	if DEBUG and DEFAULT_CHAT_FRAME then
+	if not DEBUG then return end
+	if DEFAULT_CHAT_FRAME then
 		DEFAULT_CHAT_FRAME:AddMessage('|cff69ccf0WoWDeck debug:|r ' .. msg)
+	end
+	if WoWDeckDB then
+		WoWDeckDB.debugLog = WoWDeckDB.debugLog or {}
+		table.insert(WoWDeckDB.debugLog, msg)
+		while #WoWDeckDB.debugLog > DEBUG_LOG_LIMIT do
+			table.remove(WoWDeckDB.debugLog, 1)
+		end
 	end
 end
 
--- A living NPC (guard, questgiver, vendor) reports a real max health;
--- gathering nodes and skinnable corpses report 0. This is what keeps
--- the card from popping profession info on every NPC you soft-target -
--- only true 0-health "units" (nodes/corpses) pass through.
-local function HasNoHealth(token)
-	return (UnitHealthMax(token) or 0) == 0
+-- This server hands out "secret" numeric values for UnitHealthMax()
+-- even out of combat in the open world, which makes any direct
+-- comparison (== 0, etc.) throw "attempt to compare a secret number
+-- value" - confirmed from a real debug log, and silently swallowed by
+-- UpdateCard's pcall, which is why the card never showed at all on
+-- that setup despite everything else being correct. issecretvalue()
+-- (when available) lets us detect this and bail out safely instead of
+-- erroring.
+local function IsSecret(v)
+	return type(issecretvalue) == 'function' and issecretvalue(v)
+end
+
+-- Herbs and ore always arrive as GameObject-... GUIDs - detecting
+-- nodes this way avoids touching health (and its secret-value risk)
+-- for the main detection path entirely.
+local function IsGameObjectGUID(guid)
+	return type(guid) == 'string' and guid:sub(1, 11) == 'GameObject-'
+end
+
+-- Skinnable corpses are real dead Units, not GameObjects, so they
+-- still need a health check - just a secret-value-safe one. Only used
+-- by the manual "Check Target" path (allowDead=true); a value we
+-- can't safely read is treated as "not a corpse" rather than erroring.
+local function IsLikelyCorpse(token)
+	local maxHP = UnitHealthMax(token)
+	if maxHP == nil or IsSecret(maxHP) then
+		return false
+	end
+	return maxHP == 0
+end
+
+-- UnitExists('softinteract') reads false for GameObjects on this
+-- server - Blizzard's own gamepad code (MainActionBarFrame.lua) checks
+-- UnitExists(token) or UnitIsGameObject(token) for exactly this reason,
+-- so the fallback path below needs the same check.
+local function TokenIsUsable(token)
+	local exists = UnitExists(token)
+	local isGameObject = type(UnitIsGameObject) == 'function' and UnitIsGameObject(token)
+	return exists or isGameObject
 end
 
 -- allowDead=true bypasses the dead-creature filter below, used by the
@@ -105,35 +155,45 @@ local function GetActiveNodeUnit(guidHint, allowDead)
 	-- so resolve that directly while it's still valid.
 	if guidHint and guidHint ~= '' then
 		local token = UnitTokenFromGUID(guidHint)
-		Debug(('guidHint=%s -> token=%s'):format(tostring(guidHint), tostring(token)))
+		local isNode = IsGameObjectGUID(guidHint)
+		Debug(('guidHint=%s -> token=%s isGameObject=%s'):format(
+			tostring(guidHint), tostring(token), tostring(isNode)))
 		if token then
-			if not HasNoHealth(token) then
-				return nil -- a living NPC, not a node - don't show profession info on it
+			if isNode then
+				if not allowDead and UnitIsDead(token) then
+					return nil
+				end
+				return token
+			elseif allowDead and IsLikelyCorpse(token) then
+				return token
 			end
-			if not allowDead and UnitIsDead(token) then
+		end
+		return nil
+	end
+
+	if TokenIsUsable('softinteract') then
+		local guid = UnitGUID('softinteract')
+		Debug(('soft usable, guid=%s'):format(tostring(guid)))
+		if IsGameObjectGUID(guid) then
+			if not allowDead and UnitIsDead('softinteract') then
 				return nil
 			end
-			return token
+			return 'softinteract'
+		elseif allowDead and IsLikelyCorpse('softinteract') then
+			return 'softinteract'
 		end
 	end
 
-	local softExists = UnitExists('softinteract')
-	local targetExists = UnitExists('target')
-	local targetHP = targetExists and UnitHealthMax('target') or nil
-	Debug(('soft=%s target=%s targetHP=%s'):format(
-		tostring(softExists), tostring(targetExists), tostring(targetHP)))
-
-	if softExists and HasNoHealth('softinteract') then
-		if not allowDead and UnitIsDead('softinteract') then
-			return nil
+	if TokenIsUsable('target') then
+		local guid = UnitGUID('target')
+		if IsGameObjectGUID(guid) then
+			if not allowDead and UnitIsDead('target') then
+				return nil
+			end
+			return 'target'
+		elseif allowDead and IsLikelyCorpse('target') then
+			return 'target'
 		end
-		return 'softinteract'
-	end
-	if targetExists and (targetHP or 0) == 0 then
-		if not allowDead and UnitIsDead('target') then
-			return nil
-		end
-		return 'target'
 	end
 end
 
@@ -161,7 +221,11 @@ local function ScanTooltip(unitToken)
 			local text = fs:GetText()
 			if text then
 				local r, g, b = fs:GetTextColor()
-				if not requirement and r and r > 0.8 and g < 0.3 and b < 0.3 then
+				-- Guard against secret values here too (see IsSecret
+				-- above) - a color channel that can't be safely compared
+				-- is treated as "not red" rather than erroring.
+				if r and not IsSecret(r) and g and not IsSecret(g) and b and not IsSecret(b)
+					and not requirement and r > 0.8 and g < 0.3 and b < 0.3 then
 					requirement = text
 				end
 			end
@@ -314,14 +378,14 @@ eventFrame:RegisterEvent('PLAYER_ENTERING_WORLD')
 eventFrame:SetScript('OnEvent', function(_, event, oldTarget, newTarget)
 	if event == 'PLAYER_ENTERING_WORLD' then
 		-- PLAYER_SOFT_INTERACT_CHANGED only fires at all when this CVar
-		-- is on. Blizzard enables it automatically in gamepad mode, and
-		-- ConsolePort normally enables it too - but ConsolePort's own
-		-- auto-enable explicitly skips this client version, so on a
-		-- plain mouse+keyboard setup nothing ever turns it on and the
-		-- card has no signal to react to. Turning it on ourselves makes
-		-- this independent of input method or which other addons are
-		-- running.
-		pcall(SetCVar, 'SoftTargetInteract', '1')
+		-- allows the current input. '1' is Enum.SoftTargetEnableFlags.
+		-- Gamepad (already the default - setting it changed nothing for
+		-- mouse+keyboard, confirmed by testing). '3' is Any, matching
+		-- Blizzard's own "Enable Interact Key" checkbox. Note this does
+		-- override that checkbox if a player had deliberately turned it
+		-- off, which is a real tradeoff - but the whole feature depends
+		-- on this being on.
+		pcall(SetCVar, 'SoftTargetInteract', '3')
 	end
 	if event == 'PLAYER_SOFT_INTERACT_CHANGED' then
 		UpdateCard(newTarget)
